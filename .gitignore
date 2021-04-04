@@ -1,0 +1,6 @@
+# Distribution / packaging
+.env
+node_modules/
+
+# Serverless directories
+.serverless

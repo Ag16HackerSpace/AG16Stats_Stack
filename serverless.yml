@@ -1,0 +1,158 @@
+service: parkabciot
+useDotenv: true
+variablesResolutionMode: 20210326
+frameworkVersion: ^2.32.1
+
+# reference: https://serverless.zone/iot-with-the-serverless-framework-e228fae87be
+provider:
+  name: aws
+  runtime: nodejs14.x
+  lambdaHashingVersion: 20201221
+  region: eu-west-1
+
+  environment: # Service wide environment variables
+    REGION: ${self:provider.region}
+    MOISTURE_DATA_TABLE: !Ref MoistureData
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            Fn::GetAtt:
+              - MoistureData
+              - Arn
+  # custom variable syntax is needed to avoid conflits with aws cloudformation functions
+  # variableSyntax: '\${{([\s\S]+?)}}'
+
+# load custom variables from a file
+custom:
+  sensorThingClientResource: ${env:sensorThingClientResource}
+  sensorThingSoilTopicResource: ${env:sensorThingSoilTopicResource}
+  iotCertificateArn: ${env:iotCertificateArn}
+
+# define the check moisture level function
+functions:
+  checkMoistureLevel:
+    handler: src/checkMoistureLevel.handle
+    events:
+      - iot:
+          sql: "SELECT * FROM 'AG16/stats'"
+    # Resource:
+    #   - ${self:custom.checkMoistureLevel.arn}
+
+resources:
+  Resources:
+    # LambdaInvokePermission:
+    #   Type: AWS::Lambda::Permission
+    #   Properties:
+    #     FunctionName: checkMoistureLevel #arn:aws:lambda:::${!Ref "AWS::Region"}:::${!Ref "AWS::AccountId"}:function:checkMoistureLevel #
+    #     Action: lambda:InvokeFunction
+    #     Principal: iot.amazonaws.com
+
+    # DynamoDB  #- see https://gist.github.com/johncmckim/9bec3ee3ed07722eb1bd4335bcd80910
+    MoistureData:
+      Type: AWS::DynamoDB::Table
+      # DeletionPolicy: Retain
+      Properties:
+        TableName: moisture-data-${opt:stage, 'dev'}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: time
+            AttributeType: "N"
+        KeySchema:
+          - AttributeName: time
+            KeyType: HASH
+
+    # IoT       #- see https://gist.github.com/johncmckim/5d149fb2416f38957c2d0e30f56c6aba
+    SensorThing:
+      Type: AWS::IoT::Thing
+      Properties:
+        AttributePayload:
+          Attributes:
+            SensorType: soil
+
+    SensorThingPolicy:
+      Type: AWS::IoT::Policy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - iot:Connect
+              Resource:
+                - "*"
+            - Effect: "Allow"
+              Action:
+                - iot:Publish
+              Resource:
+                - "*"
+
+    SensorPolicyPrincipalAttachmentCert:
+      Type: AWS::IoT::PolicyPrincipalAttachment
+      Properties:
+        PolicyName: !Ref SensorThingPolicy
+        Principal: ${self:custom.iotCertificateArn}
+
+    SensorThingPrincipalAttachmentCert:
+      Type: "AWS::IoT::ThingPrincipalAttachment"
+      Properties:
+        ThingName: !Ref SensorThing
+        Principal: ${self:custom.iotCertificateArn}
+
+    IoTRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - iot.amazonaws.com
+              Action:
+                - sts:AssumeRole
+
+    IoTRolePolicies:
+      Type: AWS::IAM::Policy
+      Properties:
+        PolicyName: iot-role-policy
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: "*"
+        Roles:
+          - !Ref IoTRole
+
+    # AWS IoT SQL Reference
+    # http://docs.aws.amazon.com/iot/latest/developerguide/iot-sql-functions.html
+    # SensorThingRule:
+    #   Type: AWS::IoT::TopicRule
+    #   Properties:
+    #     TopicRulePayload:
+    #       RuleDisabled: false
+    #       Sql: "SELECT * FROM 'AG16/stats'"
+    #       Actions:
+    #         - DynamoDB:
+    #             TableName: !Ref MoistureData
+    #             RoleArn: !GetAtt IoTRole.Arn
+    #             HashKeyField: "topic"
+    #             HashKeyValue: ${topic(2)}
+    #             RangeKeyField: "Timestamp"
+    #             RangeKeyValue: "${timestamp()}"
+    #             PayloadField: "Data"
+    #         - Lambda:
+    #             FunctionArn: checkMoistureLevel #!GetAtt checkMoistureLevel.Arn
