@@ -1,6 +1,6 @@
 const AWS = require('aws-sdk')
 
-const { REGION, MOISTURE_DATA_TABLE } = process.env
+const { REGION, STATS_DATA_TABLE } = process.env
 
 const dynamodb = new AWS.DynamoDB.DocumentClient({ region: REGION })
 
@@ -29,7 +29,7 @@ const handle = async (event, _ctx) => {
   try {
     await dynamodb
       .put({
-        TableName: MOISTURE_DATA_TABLE,
+        TableName: STATS_DATA_TABLE,
         Item: sensorData
       })
       .promise()
